@@ -1,11 +1,10 @@
-FROM docker.io/golang:alpine as builder
+FROM docker.io/golang:alpine AS builder
 
 RUN apk add make
 
 WORKDIR /usr/local/src
 
 ARG VERSION
-ENV VERSION=${VERSION:-2.0.0}
 
 RUN wget -O proxyguard.tar.gz https://codeberg.org/eduVPN/proxyguard/archive/$VERSION.tar.gz
 RUN tar -xzf proxyguard.tar.gz
@@ -23,4 +22,4 @@ ENV TO=127.0.0.1:51820
 ENV LISTEN_PORT=51821
 EXPOSE $LISTEN_PORT/tcp
 
-CMD proxyguard-server --listen [::]:$LISTEN_PORT --to=$TO
+CMD proxyguard-server --listen [::]:$LISTEN_PORT --to $TO

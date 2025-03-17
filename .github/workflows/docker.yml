@@ -1,9 +1,9 @@
-name: publish
+name: docker
 
 on:
   push:
   schedule:
-    - cron: "0 9 * * 1"
+    - cron: "0 9 * * *"
 
 env:
   REGISTRY: ghcr.io
@@ -13,7 +13,12 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      # TODO: get latest version from codeberg release page, export, set tag
+      - name: Get latest release info
+        id: rel_info
+        run: |
+          curl -sSL -o /tmp/rel_info https://codeberg.org/api/v1/repos/eduVPN/proxyguard/releases/latest
+          echo "PG_REL_TAG=$(jq -r .tag_name /tmp/rel_info)" >> "$GITHUB_OUTPUT"
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -22,12 +27,9 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=schedule
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
+            type=semver,pattern={{version}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
+            type=semver,pattern={{major}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
 
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
@@ -47,5 +49,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: VERSION=${{ steps.rel_info.outputs.PG_REL_TAG }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
