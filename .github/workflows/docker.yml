@@ -52,3 +52,5 @@ jobs:
           build-args: VERSION=${{ steps.rel_info.outputs.PG_REL_TAG }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
