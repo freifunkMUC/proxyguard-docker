@@ -30,6 +30,12 @@ jobs:
             type=semver,pattern={{version}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
             type=semver,pattern={{major}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
+          # set 'created' label fix to commit date to avoid cache busting/changing digests on rebuilds
+          labels: |
+            org.opencontainers.image.created={{commit_date 'YYYY-MM-DDTHH:mm:ss.SSS[Z]'}}
+            org.opencontainers.image.version=${{ steps.rel_info.outputs.PG_REL_TAG }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.licenses=GPL-3.0,MIT
 
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
