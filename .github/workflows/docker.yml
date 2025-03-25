@@ -18,6 +18,7 @@ jobs:
         run: |
           curl -sSL -o /tmp/rel_info https://codeberg.org/api/v1/repos/eduVPN/proxyguard/releases/latest
           echo "PG_REL_TAG=$(jq -r .tag_name /tmp/rel_info)" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty='%ct')" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
         id: meta
@@ -60,3 +61,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.rel_info.outputs.SOURCE_DATE_EPOCH }}
