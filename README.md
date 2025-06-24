@@ -25,7 +25,6 @@ docker run --network host -e LISTEN_PORT=51821 -e TO=127.0.0.1:51820 ghcr.io/fre
 ### With Docker Compose
 
 ```yml
-version: "3.0"
 services:
   proxyguard:
     image: ghcr.io/freifunkmuc/proxyguard-docker:2
