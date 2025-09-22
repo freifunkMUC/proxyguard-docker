@@ -12,7 +12,7 @@ RUN tar -xzf proxyguard.tar.gz
 RUN cd proxyguard; CGO_ENABLED=0 make server
 
 
-FROM docker.io/alpine:3.22.0
+FROM docker.io/alpine:3.22.1
 
 WORKDIR /usr/local/bin
 COPY --from=builder /usr/local/src/proxyguard/proxyguard-server /usr/local/bin/
