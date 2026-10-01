@@ -1,4 +1,4 @@
-FROM docker.io/golang:1.27.0-alpine AS builder
+FROM docker.io/golang:1.27.1-alpine AS builder
 
 RUN apk add make
 
