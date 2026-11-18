@@ -1,7 +1,23 @@
 name: docker
 
+# Builds the image of the latest ProxyGuard release for every push and pull
+# request; pushes to main publish it. A daily run rebuilds without cache and
+# publishes only if there is a new release, if the published image has
+# pending Alpine package upgrades, or if it was built from another base image
+# than alpine:<tag> is now. Otherwise the digests of the published tags stay
+# as they are. A rebuild adds an unchanged <version>-rN tag; <version>,
+# <major>.<minor> and <major> follow. Every published image gets BuildKit
+# provenance, an SBOM and a signed build provenance attestation.
+
 on:
   push:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and publish even if nothing changed
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "0 9 * * *"
 
@@ -20,6 +36,10 @@ jobs:
       id-token: write
       attestations: write
     runs-on: ubuntu-latest
+    # Two runs probing the same -rN would overwrite each other's tag.
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,9 +47,109 @@ jobs:
       - name: Get latest release info
         id: rel_info
         run: |
-          curl -sSL -o /tmp/rel_info https://codeberg.org/api/v1/repos/eduVPN/proxyguard/releases/latest
+          curl -fsSL -o /tmp/rel_info https://codeberg.org/api/v1/repos/eduVPN/proxyguard/releases/latest
           echo "PG_REL_TAG=$(jq -r .tag_name /tmp/rel_info)" >> "$GITHUB_OUTPUT"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty='%ct')" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          FORCE: ${{ inputs.force }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          PG_REL_TAG: ${{ steps.rel_info.outputs.PG_REL_TAG }}
+        run: |
+          IMAGE="${IMAGE,,}"  # registry names are lowercase
+          version=${PG_REL_TAG#v}
+          # The base image of the final stage and its current digest.
+          base_ref=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' Dockerfile | tail -n1)
+          base_digest=$(docker buildx imagetools inspect "$base_ref" --format '{{.Manifest.Digest}}')
+          case "$base_digest" in sha256:*) ;; *) echo "No digest for $base_ref: $base_digest" >&2; exit 1 ;; esac
+          build=true push=false no_cache=false
+
+          case "$EVENT" in
+            pull_request)
+              ;;
+            push)
+              if [ "$REF_NAME" = main ]; then
+                push=true
+              fi
+              ;;
+            workflow_dispatch | schedule)
+              no_cache=true
+              if [ "$FORCE" = true ]; then
+                echo "Forced"
+                push=true
+              elif ! out=$(docker pull --quiet --platform linux/amd64 "$IMAGE:$version" 2>&1); then
+                if grep -qiE 'not found|manifest unknown' <<< "$out"; then
+                  echo "Nothing published for $version yet"
+                  push=true
+                else
+                  echo "Cannot pull $IMAGE:$version: $out" >&2
+                  exit 1
+                fi
+              else
+                # A failing "apk update" or "docker run" must not look like "nothing pending".
+                upgrade=$(docker run --rm --platform linux/amd64 --user 0 --entrypoint sh "$IMAGE:$version" \
+                  -c 'apk update >/dev/null && apk upgrade --simulate') || exit 1
+                pending=$(grep -cE '^\([0-9]+/[0-9]+\) ' <<< "$upgrade" || true)
+                built_from=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.base.digest" }}' "$IMAGE:$version")
+                echo "Pending upgrades: $pending"
+                echo "Base digest: published ${built_from:-none}, now $base_digest"
+                if [ "$pending" -gt 0 ] || [ "$built_from" != "$base_digest" ]; then
+                  push=true
+                else
+                  echo "up to date"
+                fi
+              fi
+              [ "$push" = true ] || build=false
+              ;;
+          esac
+
+          {
+            echo "build=$build"
+            echo "push=$push"
+            echo "no_cache=$no_cache"
+            echo "version=$version"
+            echo "base_name=${base_ref%@*}"
+            echo "base_digest=$base_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      # The first unused <version>-rN, found by asking the registry. Only a
+      # "not found" answer means the tag is free (for -r1 also "name unknown"
+      # or "denied": GHCR's answer while the package does not exist yet); any
+      # other error fails the job rather than risk overwriting an immutable tag.
+      - name: Rebuild number
+        id: rebuild
+        if: steps.decide.outputs.push == 'true'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          IMAGE="${IMAGE,,}"
+          n=1
+          while true; do
+            if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION-r$n" 2>&1); then
+              n=$((n + 1))
+            elif grep -qiE 'not found|manifest unknown' <<< "$out"; then
+              break
+            elif [ "$n" = 1 ] && grep -qiE 'name unknown|denied' <<< "$out"; then
+              break
+            else
+              echo "Cannot probe $IMAGE:$VERSION-r$n: $out" >&2
+              exit 1
+            fi
+          done
+          echo "n=$n" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
         id: meta
@@ -42,50 +162,52 @@ jobs:
             type=semver,pattern={{version}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
             type=semver,pattern={{major}},value=${{ steps.rel_info.outputs.PG_REL_TAG }}
+            type=raw,value=${{ steps.decide.outputs.version }}-r${{ steps.rebuild.outputs.n }},enable=${{ steps.decide.outputs.push == 'true' }}
           # set 'created' label fix to commit date to avoid cache busting/changing digests on rebuilds
           labels: |
             org.opencontainers.image.created={{commit_date 'YYYY-MM-DDTHH:mm:ss.SSS[Z]'}}
             org.opencontainers.image.version=${{ steps.rel_info.outputs.PG_REL_TAG }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.licenses=GPL-3.0,MIT
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+            org.opencontainers.image.base.name=${{ steps.decide.outputs.base_name }}
+            org.opencontainers.image.base.digest=${{ steps.decide.outputs.base_digest }}
 
       - name: Set up QEMU
+        if: steps.decide.outputs.build == 'true'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
+        if: steps.decide.outputs.build == 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # A scheduled or manual build ignores the cache: a cached "apk add"
+      # layer would carry old packages.
       - name: Build and push
         id: push
+        if: steps.decide.outputs.build == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          push: ${{ github.event_name != 'pull_request' && github.ref_name == 'main' }}
+          push: ${{ steps.decide.outputs.push }}
+          no-cache: ${{ steps.decide.outputs.no_cache == 'true' }}
           build-args: VERSION=${{ steps.rel_info.outputs.PG_REL_TAG }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: false
+          provenance: mode=max
+          sbom: true
         env:
           SOURCE_DATE_EPOCH: ${{ steps.rel_info.outputs.SOURCE_DATE_EPOCH }}
 
       - name: Image name
         id: image
-        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        if: steps.decide.outputs.push == 'true'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         run: echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
-        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        if: steps.decide.outputs.push == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
