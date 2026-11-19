@@ -147,8 +147,9 @@ jobs:
           tags: proxyguard:fresh
           no-cache: ${{ steps.decide.outputs.no_cache == 'true' }}
           build-args: VERSION=${{ steps.rel_info.outputs.PG_REL_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=proxyguard
+          # own scope: the publish reads what the check build wrote
+          cache-to: type=gha,mode=max,scope=proxyguard
           provenance: false
         env:
           SOURCE_DATE_EPOCH: ${{ steps.rel_info.outputs.SOURCE_DATE_EPOCH }}
@@ -233,7 +234,7 @@ jobs:
           build-args: VERSION=${{ steps.rel_info.outputs.PG_REL_TAG }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=proxyguard
           provenance: mode=max
           sbom: true
         env:
